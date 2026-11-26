@@ -24,9 +24,11 @@ def sample_batch():
         return {"count": len(rows), "total": sum(rows)}
 
     @task
-    def load(summary, ds=None):
+    def load(summary, logical_date=None):
+        # ds는 UTC 날짜라 한국 시간 자정 실행이 전날로 찍힌다. 한국 날짜로 바꿔 쓴다.
+        day = logical_date.in_timezone("Asia/Seoul").strftime("%Y-%m-%d")
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        out = DATA_DIR / f"summary_{ds}.json"
+        out = DATA_DIR / f"summary_{day}.json"
         out.write_text(json.dumps(summary, ensure_ascii=False))
         print(f"저장: {out} {summary}")
 

@@ -15,6 +15,12 @@ Airflow 배치 작업을 연습하는 저장소입니다. 라이브러리는 만
 | `data/` | `/opt/airflow/data` | 배치 입출력 파일 (Git 제외) |
 
 ## 실행
+Docker Hub가 429(요청 횟수 제한)를 내면 미러에서 받아 원래 이름으로 태그를 붙입니다.
+```bash
+docker pull mirror.gcr.io/library/postgres:16 && docker tag mirror.gcr.io/library/postgres:16 postgres:16
+docker pull mirror.gcr.io/apache/airflow:3.4.0 && docker tag mirror.gcr.io/apache/airflow:3.4.0 apache/airflow:3.4.0
+```
+
 ```bash
 cp .env.example .env            # AIRFLOW_UID를 `id -u` 값으로
 docker compose up airflow-init  # 처음 한 번: DB 마이그레이션, 계정 생성

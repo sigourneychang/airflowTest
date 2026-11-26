@@ -4,6 +4,7 @@ Airflow 배치 작업 연습 저장소. 개요와 실행 방법은 [README.md](R
 
 ## 코드 규칙
 - Airflow 3.x 문법을 씁니다. `from airflow.sdk import dag, task`를 쓰고, 2.x 전용 import(`airflow.decorators`, `airflow.operators.python` 등)는 쓰지 않습니다.
+- 날짜는 한국 시간 기준으로 씁니다. `ds`, `ds_nodash`는 UTC 날짜라 하루 밀리므로 `logical_date.in_timezone("Asia/Seoul")`을 씁니다.
 - 배치 입출력 파일은 컨테이너의 `/opt/airflow/data`(호스트 `data/`)에 둡니다.
 - 라이브러리나 패키지는 만들지 않습니다. 추가 pip 패키지가 필요하면 먼저 사용자에게 묻습니다.
 - 화면 문구, 로그, 문서는 한국어로 씁니다.
