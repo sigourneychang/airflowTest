@@ -93,8 +93,8 @@ def describe(r):
 
 @dag(
     schedule="*/10 * * * *",
-    start_date=pendulum.datetime(2026, 11, 27, tz="Asia/Seoul"),
-    catchup=False,
+    start_date=pendulum.datetime(2026, 11, 27, 8, 0, tz="Asia/Seoul"),
+    catchup=True,           # 꺼져 있다가 켜면 마지막 예약 실행 다음부터 빠진 시각을 채움
     max_active_runs=1,      # 앞 실행이 10분을 넘기면 다음 실행은 기다린다
     tags=["hive"],
 )

@@ -43,6 +43,9 @@ docker compose down -v       # 중지 + DB 볼륨 삭제 (초기화)
 - `sample_batch`: extract → transform → load. 결과를 `data/summary_<날짜>.json`에 씁니다.
 - `hive_copy`: 10분마다 Hive 원본 클러스터의 테이블 하나를 대상 클러스터로 옮깁니다. 아래 "Hive 이관 DAG"를 보세요.
 - `hive_cleanup`: `hive_copy`가 테이블을 옮길 때마다(Asset 이벤트) 그 테이블을 대상에서 지웁니다.
+- `hive_cleanup_switch`: 매시 5, 15, 25, 35, 45, 55분에 `hive_cleanup`이 켜져 있으면 끄고, 꺼져 있으면 켭니다.
+- `hive_append`: 매분 원본 클러스터의 `db_appendtest.table_appendtest`에 3행을 넣습니다. 파티션 `ymdhm`은 실행 시각(한국 시간)의 연월일시분입니다.
+- `hive_append_copy`: 10분마다 `table_appendtest`의 새 파티션을 대상 클러스터로 옮깁니다. 아래 "증분 복사 DAG"를 보세요.
 - 새 DAG는 처음에 일시 정지 상태로 올라옵니다(`DAGS_ARE_PAUSED_AT_CREATION`). 화면에서 켜거나 직접 실행하세요.
 - 새 DAG 파일은 dag-processor가 폴더를 다시 훑을 때(기본 5분)까지 안 보일 수 있습니다. 바로 올리려면 `docker compose run --rm airflow-cli airflow dags reserialize`를 실행합니다.
 
@@ -66,7 +69,32 @@ docker compose run --rm airflow-cli airflow dags unpause hive_cleanup
   - `hive_cleanup`이 밀려 있는 동안 이벤트가 여러 개 쌓이면 한 번에 묶여 들어오고, 받은 테이블을 모두 지웁니다.
   - `catchup=True`라서 `hive_cleanup`을 꺼 둔 동안 생긴 이벤트도 처리합니다. 다시 켠 뒤 다음 이벤트가 오면 밀린 이벤트마다 실행이 하나씩 생깁니다(run_id에는 그 이벤트의 시각이 들어감). 켜는 순간 바로 돌지는 않습니다.
 - 연결은 Airflow 화면의 Assets 메뉴에서 볼 수 있습니다.
+- `hive_cleanup_switch`는 Airflow REST API(`PATCH /api/v2/dags/hive_cleanup`)로 `hive_cleanup`을 끄고 켭니다. Airflow 3 작업은 메타데이터 DB에 직접 접근할 수 없기 때문입니다.
+  - 접속 정보는 Airflow Connection `airflow_api`에서 읽습니다. 처음 한 번 만듭니다.
+    ```bash
+    docker compose run --rm airflow-cli airflow connections add airflow_api --conn-type http \
+      --conn-host airflow-apiserver --conn-port 8080 --conn-login airflow --conn-password airflow
+    ```
+  - 수동 실행할 때는 `action`을 `pause`나 `unpause`로 줄 수 있습니다. 기본값 `toggle`은 지금 상태를 뒤집습니다.
+  - 수동 실행이나 실패로 순서가 한 번 어긋나면 그 뒤로는 켜지고 꺼지는 시간대가 바뀝니다.
+  - 꺼져 있는 동안 `hive_copy`가 옮긴 테이블은, 다시 켠 뒤 다음 `hive_copy` 이벤트가 올 때 `catchup`으로 함께 지워집니다.
 - 로그에는 `이관 완료: … N행 복사 …`, `대상 삭제 완료: …`처럼 테이블과 행 수가 남습니다.
 - 진행 상태는 HyundaiETLPRJ의 `reports/` 결과 CSV를 씁니다. 그래서 HyundaiETLPRJ 웹 화면과 이력이 같습니다.
 - 접속 설정은 HyundaiETLPRJ의 `conf/local.ini`(`docker exec ...`)를 그대로 씁니다. Airflow 이미지에 docker CLI가 없어서 [bin/docker](bin/docker)가 Docker 소켓으로 `docker exec`를 대신합니다.
 - `docker-compose.yml`에서 Airflow 컨테이너에 Docker 소켓, HyundaiETLPRJ(읽기 전용), 그 `reports/`(쓰기)를 붙입니다. 위치와 소켓 그룹은 `.env`의 `HIVE_PRJ_DIR`, `DOCKER_GID`입니다.
+
+## 증분 복사 DAG (`hive_append`, `hive_append_copy`)
+- `hive_append`는 DB와 테이블이 없으면 만들고(`id`, `name`, `amount`, `created_at`, 파티션 `ymdhm`, ORC), 그 분의 파티션을 `INSERT OVERWRITE`로 씁니다. 같은 분을 다시 실행해도 3행입니다.
+- `hive_append_copy`는 10분마다 돌고, 옮길 파티션을 워터마크로만 정합니다. 원본이나 대상의 파티션 목록과 비교하지 않습니다.
+  - 워터마크는 Airflow Variable `hive_append_copy_watermark`(`yyyyMMddHHmm`)이고, 여기까지 처리가 끝났다는 뜻입니다.
+  - 실행 시각을 L이라 하면 `min(워터마크, L-20분)` 다음 분부터 `L-10분`까지가 이번 구간입니다(한 번에 최대 120분).
+    - 평소에는 워터마크가 L-20분이라 그 실행 자신의 10분입니다.
+    - 빠진 실행이 있으면(꺼져 있었거나 실패) 워터마크부터 이어서 가져옵니다.
+    - clear나 backfill로 지난 실행을 다시 돌리면 그 실행의 10분을 다시 복사해서 덮어씁니다.
+  - 구간의 파티션 경로가 원본 HDFS에 있는지만 확인하고, 없는 분은 로그를 남기고 건너뜁니다.
+  - 복사: 대상에 같은 파티션 폴더가 있으면 지우고, 대상 클러스터에서 `hadoop fs -cp`로 원본 HDFS의 파티션 폴더를 복사한 뒤 `ALTER TABLE ... ADD IF NOT EXISTS PARTITION`으로 등록합니다. 덮어쓰는 몇 초 동안 대상에서 그 파티션은 비어 보입니다. 원본에는 읽기만 합니다.
+  - 검증: 옮긴 파티션마다 원본과 대상의 행 수를 비교합니다. 로그에 `ymdhm=…: 원본 3행 / 대상 3행 OK`가 남습니다.
+  - 검증이 성공하면 워터마크를 구간의 마지막 분으로 올립니다. 지금 값보다 클 때만 올리므로 지난 실행을 다시 돌려도 뒤로 가지 않습니다. 실패하면 그대로입니다.
+  - Variable이 없으면 실패합니다. 시작할 분의 바로 앞 값으로 먼저 만듭니다: `docker compose run --rm airflow-cli airflow variables set hive_append_copy_watermark 202611271241`
+  - 워터마크가 지나간 뒤에 원본에 생긴 파티션(그 분보다 10분 넘게 늦게 쓰인 것)은 자동으로 옮기지 않습니다. 그 시각의 실행을 clear하거나 backfill하면 옮겨집니다.
+  - `hive_migrate.py`는 테이블 단위 도구라 이 DAG에서는 쓰지 않습니다.
