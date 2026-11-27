@@ -24,7 +24,16 @@ x-airflow-common:
     - ./config:/opt/airflow/config
     - ./plugins:/opt/airflow/plugins
     - ./data:/opt/airflow/data
+    # Hive 이관(hive_copy DAG): bin/docker 가 Docker 소켓으로 Hive 컨테이너에 docker exec 를 대신 보냄
+    - ./bin:/opt/airflow/bin:ro
+    - /var/run/docker.sock:/var/run/docker.sock
+    # HyundaiETLPRJ 이관 도구는 읽기 전용, 이관 기록(reports/)만 쓰기 (웹 화면과 같은 기록을 씀)
+    - ${HIVE_PRJ_DIR:-../HyundaiETLPRJ}:/opt/hyundai:ro
+    - ${HIVE_PRJ_DIR:-../HyundaiETLPRJ}/reports:/opt/hyundai/reports
   user: "${AIRFLOW_UID:-50000}:0"
+  # Colima VM 의 Docker 소켓 그룹 (srw-rw---- root:991)
+  group_add:
+    - "${DOCKER_GID:-991}"
   depends_on:
     &airflow-common-depends-on
     postgres:

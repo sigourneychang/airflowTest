@@ -1,0 +1,14 @@
+# hive_copy DAG 이관 목록: 위에서부터 10분마다 한 개씩 옮깁니다.
+# 형식: db,table[,tgt_db]   (tgt_db 가 없으면 같은 DB 이름)
+# 뷰는 참조하는 테이블보다 뒤에 둡니다.
+db,table
+sales,contract
+sales,contract_agg_daily
+sales,contract_agg_monthly
+sales,contract_err
+sales,contract_hist
+sales,delivery
+sales,discount
+sales,quote_hist
+sales,incentive
+sales,v_incentive_summary

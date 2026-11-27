@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Airflow 컨테이너용 `docker exec` 대용 명령.
+
+Airflow 이미지에는 docker CLI가 없고 `docker` Python 패키지만 있습니다.
+HyundaiETLPRJ의 설정(conf/local.ini)은 `docker exec [-i] 컨테이너 명령...`으로 Hive에 접근하므로,
+이 스크립트를 PATH 앞에 두면 설정을 고치지 않고 그대로 쓸 수 있습니다.
+
+    docker exec [-i] CONTAINER CMD [ARG...]
+
+- `-i`가 있으면 표준 입력을 컨테이너 명령에 넘기고, 다 넘기면 입력을 닫습니다.
+- 표준 출력과 표준 오류를 나눠서 돌려주고, 컨테이너 명령의 종료 코드로 끝납니다.
+- `exec` 말고 다른 하위 명령은 지원하지 않습니다.
+"""
+import os
+import socket
+import sys
+import threading
+import time
+
+import docker
+from docker.utils.socket import frames_iter
+
+SOCK = "unix:///var/run/docker.sock"
+
+
+def usage(msg):
+    sys.stderr.write("docker(대용): %s\n사용법: docker exec [-i] CONTAINER CMD [ARG...]\n" % msg)
+    sys.exit(2)
+
+
+def parse(argv):
+    if not argv or argv[0] != "exec":
+        usage("exec 하위 명령만 지원합니다: %r" % (argv[:1],))
+    args, interactive = argv[1:], False
+    while args and args[0].startswith("-"):
+        opt = args.pop(0)
+        if opt in ("-i", "--interactive"):
+            interactive = True
+        else:
+            usage("지원하지 않는 옵션: %s" % opt)
+    if len(args) < 2:
+        usage("컨테이너와 명령이 필요합니다")
+    return interactive, args[0], args[1:]
+
+
+def pump_stdin(raw):
+    """표준 입력을 끝까지 보내고 쓰기 쪽만 닫는다(컨테이너 명령이 EOF를 받는다)."""
+    try:
+        while True:
+            chunk = os.read(0, 65536)
+            if not chunk:
+                break
+            raw.sendall(chunk)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    finally:
+        try:
+            raw.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+
+def main():
+    interactive, container, cmd = parse(sys.argv[1:])
+    api = docker.APIClient(base_url=SOCK, timeout=None)
+    ex = api.exec_create(container, cmd, stdin=interactive, stdout=True, stderr=True, tty=False)
+    sock = api.exec_start(ex["Id"], socket=True)
+    raw = getattr(sock, "_sock", sock)
+    if interactive:
+        threading.Thread(target=pump_stdin, args=(raw,), daemon=True).start()
+    out, err = sys.stdout.buffer, sys.stderr.buffer
+    for stream, data in frames_iter(sock, tty=False):
+        (err if stream == 2 else out).write(data)
+        (err if stream == 2 else out).flush()
+    # 출력이 끝나도 종료 코드가 잠깐 늦게 잡힐 수 있어서 몇 번 다시 본다
+    for _ in range(50):
+        info = api.exec_inspect(ex["Id"])
+        if not info.get("Running"):
+            break
+        time.sleep(0.1)
+    code = info.get("ExitCode")
+    sys.exit(code if code is not None else 1)
+
+
+if __name__ == "__main__":
+    main()
