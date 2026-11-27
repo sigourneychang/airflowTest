@@ -1,7 +1,10 @@
 """Hive 이관: 10분마다 원본 클러스터의 테이블 하나를 대상 클러스터로 복사한다.
 
 HyundaiETLPRJ(컨테이너 /opt/hyundai, 읽기 전용)의 이관 도구 hive_migrate.py를 그대로 실행한다.
-- 이관 목록: 이 폴더의 hive_copy_sources.csv (db,table). 위에서부터 차례로 한 개씩 옮긴다.
+- 이관 목록: 이 폴더의 hive_copy_sources.csv (db,table). 지난번에 옮긴 테이블 다음 것을 옮기고,
+  끝까지 가면 처음부터 다시 돈다. 대상에 이미 OK로 있는 테이블은 건너뛴다.
+- copy 작업이 성공하면 Asset `hive_copied_table` 이벤트를 남긴다(extra 에 옮긴 테이블).
+  hive_cleanup DAG가 이 이벤트로 실행돼서 그 테이블을 대상에서 지운다.
 - 진행 상태: /opt/hyundai/reports 의 결과 CSV. HyundaiETLPRJ 웹 화면과 같은 기록을 쓰므로,
   웹 화면에서 옮긴 테이블은 건너뛰고 Airflow가 옮긴 테이블은 웹 화면에도 보인다.
 - 클러스터 접속: /opt/hyundai/conf/local.ini 의 `docker exec ...` 명령.
@@ -15,7 +18,7 @@ import sys
 from pathlib import Path
 
 import pendulum
-from airflow.sdk import dag, task
+from airflow.sdk import Asset, dag, task
 from airflow.sdk.exceptions import AirflowSkipException
 
 PRJ = Path("/opt/hyundai")
@@ -23,6 +26,9 @@ CONFIG = PRJ / "conf" / "local.ini"
 SOURCES = Path(__file__).with_name("hive_copy_sources.csv")
 REPORTS = PRJ / "reports"
 WORK_DIR = Path("/opt/airflow/data/hive_copy")   # 실행마다 만드는 한 줄짜리 이관 목록
+LAST_COPIED = WORK_DIR / "last_copied.txt"      # 마지막으로 옮긴 원본 db.table (목록을 차례로 돌 때 씀)
+# 대상 클러스터에 테이블을 하나 옮겼다는 이벤트. hive_cleanup.py 에 같은 이름과 URI로 정의돼 있다
+COPIED_TABLE = Asset(name="hive_copied_table", uri="hive://tgt/copied_table")
 
 log = logging.getLogger(__name__)
 
@@ -95,18 +101,24 @@ def describe(r):
 def hive_copy():
     @task
     def pick_next():
+        """지난번에 옮긴 테이블 다음부터 목록을 차례로 돌며, 대상에 OK가 아닌 첫 테이블을 고른다.
+        hive_cleanup 이 옮긴 테이블을 대상에서 지우므로 목록을 계속 돌게 된다."""
         sources, state = read_sources(), target_state()
-        done = [s for s, t in sources if state.get(t) == "OK"]
-        todo = [(s, t) for s, t in sources if state.get(t) != "OK"]
-        log.info("이관 목록 %d개: 완료 %d, 남음 %d", len(sources), len(done), len(todo))
+        names = [s for s, _ in sources]
+        last = LAST_COPIED.read_text().strip() if LAST_COPIED.exists() else ""
+        start = names.index(last) + 1 if last in names else 0
+        order = sources[start:] + sources[:start]
+        todo = [(s, t) for s, t in order if state.get(t) != "OK"]
+        log.info("이관 목록 %d개: 대상에 있음(OK) %d, 옮길 수 있음 %d, 지난번에 옮긴 테이블 %s",
+                 len(sources), len(sources) - len(todo), len(todo), last or "없음")
         if not todo:
-            raise AirflowSkipException("모두 복사했습니다. 옮길 테이블이 없습니다.")
+            raise AirflowSkipException("목록의 테이블이 모두 대상에 있습니다. 옮길 테이블이 없습니다.")
         src, tgt = todo[0]
         log.info("이번에 옮길 테이블: %s -> %s (대상 상태: %s)", src, tgt, state.get(tgt, "없음"))
         return {"src": src, "tgt": tgt}
 
-    @task(execution_timeout=pendulum.duration(minutes=30))
-    def copy(item, logical_date=None):
+    @task(execution_timeout=pendulum.duration(minutes=30), outlets=[COPIED_TABLE])
+    def copy(item, logical_date=None, outlet_events=None):
         src_db, table = item["src"].split(".", 1)
         tgt_db = item["tgt"].split(".", 1)[0]
         stamp = logical_date.in_timezone("Asia/Seoul").strftime("%Y%m%d_%H%M")
@@ -142,8 +154,12 @@ def hive_copy():
             log.error("이관 실패: %s (종료 코드 %d)", summary, rc)
             raise RuntimeError("이관 실패: %s" % summary)
         log.info("이관 완료: %s", summary)
-        return {k: row.get(k) for k in ("src", "tgt", "kind", "status", "src_rows", "tgt_rows",
-                                        "validated_by", "src_bytes", "seconds")}
+        LAST_COPIED.write_text(item["src"] + "\n")
+        result = {k: row.get(k) for k in ("src", "tgt", "kind", "status", "src_rows", "tgt_rows",
+                                          "validated_by", "src_bytes", "seconds")}
+        # 작업이 성공으로 끝나면 이 값을 실은 Asset 이벤트가 하나 기록된다 (실패·건너뜀이면 기록 안 됨)
+        outlet_events[COPIED_TABLE].extra = result
+        return result
 
     copy(pick_next())
 

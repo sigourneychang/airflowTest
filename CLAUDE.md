@@ -13,7 +13,7 @@ Airflow 배치 작업 연습 저장소. 개요와 실행 방법은 [README.md](R
 - DAG 하나는 파일 하나로 끝냅니다. 공용 모듈이 없으니 [dags/sample_batch.py](dags/sample_batch.py)를 본보기로 씁니다(TaskFlow, `pendulum` 한국 시간 `start_date`, `catchup=False`).
 - `AIRFLOW__CORE__DEFAULT_TIMEZONE`은 `Asia/Seoul`이지만 `logical_date`는 UTC로 들어옵니다. 그래서 위 날짜 규칙이 필요합니다.
 - 추가 pip 패키지는 `.env`의 `_PIP_ADDITIONAL_REQUIREMENTS`로 넣습니다(사용자 승인 후).
-- `hive_copy` DAG는 HyundaiETLPRJ(`/opt/hyundai`, 읽기 전용)의 `hive_migrate.py`를 subprocess로 실행합니다. HyundaiETLPRJ 코드는 이 저장소에서 고치지 않습니다. 이관 기록 `/opt/hyundai/reports`는 HyundaiETLPRJ 웹 화면과 함께 씁니다. 대상 삭제, `--if-exists replace`처럼 대상 클러스터를 지우는 실행은 먼저 사용자에게 묻습니다.
+- `hive_copy`(복사)와 `hive_cleanup`(복사한 테이블을 대상에서 삭제, Asset `hive_copied_table`로 연결) DAG는 HyundaiETLPRJ(`/opt/hyundai`, 읽기 전용)의 `hive_migrate.py`를 subprocess로 실행합니다. HyundaiETLPRJ 코드는 이 저장소에서 고치지 않습니다. 이관 기록 `/opt/hyundai/reports`는 HyundaiETLPRJ 웹 화면과 함께 씁니다. 대상 삭제, `--if-exists replace`처럼 대상 클러스터를 지우는 실행은 먼저 사용자에게 묻습니다.
 - `bin/docker`는 `docker exec [-i]`만 흉내 내는 대용 스크립트입니다. 작업에서 쓸 때는 PATH 앞에 `/opt/airflow/bin`을 붙입니다.
 - `airflow-cli`는 `debug` 프로필 서비스라 `up -d`로는 뜨지 않습니다. `docker compose run --rm airflow-cli ...`로만 씁니다.
 
